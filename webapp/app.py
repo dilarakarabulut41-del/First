@@ -67,7 +67,7 @@ if POPPLER_PATH:
     print(f"[OK] Poppler bulundu: {POPPLER_PATH}")
 else:
     print("[INFO] Poppler PATH'den alınacak (Linux/Mac veya conda PATH'i aktif)")
-MODEL_ID = os.getenv("FINETUNED_MODEL_ID", "gpt-4o-mini-2024-07-18")
+MODEL_ID = os.getenv("FINETUNED_MODEL_ID", "").strip() or "gpt-4o-mini-2024-07-18"
 TALIMATLAR_YOLU = Path(os.getenv("DRIVE_DATA_PATH", "./drive")) / "talimatlar"
 ITIRAZ_KLASOR = Path("./itirazlar")
 ITIRAZ_KLASOR.mkdir(exist_ok=True)
