@@ -59,6 +59,8 @@ ITIRAZ_SISTEM_MESAJI = (
 )
 
 
+# ── Yardımcı fonksiyonlar ─────────────────────────────────
+
 def talimat_yukle() -> str:
     global _talimat_cache
     if _talimat_cache:
@@ -73,6 +75,7 @@ def talimat_yukle() -> str:
 
 
 def pdf_to_jpeg_b64(pdf_bytes: bytes) -> str | None:
+    """PDF bytes → base64 JPEG (ilk sayfa, max 1024px)."""
     try:
         with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
             tmp.write(pdf_bytes)
@@ -98,6 +101,7 @@ def pdf_path_to_b64(pdf_yolu: Path) -> str | None:
 
 
 def notu_cikart(metin: str) -> str:
+    """NOT: veya YENI_NOT: satırından sayıyı çeker."""
     for pattern in [r"YENI_NOT:\s*(\d+)", r"NOT:\s*(\d+)"]:
         m = re.search(pattern, metin)
         if m:
@@ -106,17 +110,21 @@ def notu_cikart(metin: str) -> str:
 
 
 def bolum_cikart(metin: str, bolum: str) -> str:
+    """Belirtilen bölüm başlığından sonraki içeriği çeker."""
     m = re.search(rf"{bolum}:\s*(.+?)(?=\n[A-Z_]+:|$)", metin, re.DOTALL)
     return m.group(1).strip() if m else ""
 
 
 def degerlendirme_yap(img_b64: str, itiraz_metni: str | None = None) -> dict:
+    """Tek bir çizimi analiz eder. itiraz_metni varsa itiraz değerlendirmesi yapar."""
     talimat = talimat_yukle()
     sistem = ITIRAZ_SISTEM_MESAJI if itiraz_metni else SISTEM_MESAJI
+
     kullanici_metin = f"Değerlendirme Talimatları:\n{talimat}\n\n"
     if itiraz_metni:
         kullanici_metin += f"Öğrencinin İtiraz Gerekçesi:\n{itiraz_metni}\n\n"
     kullanici_metin += "Bu öğrenci çizimini değerlendir:"
+
     yanit = client.chat.completions.create(
         model=MODEL_ID,
         messages=[
@@ -126,7 +134,8 @@ def degerlendirme_yap(img_b64: str, itiraz_metni: str | None = None) -> dict:
                 {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}}
             ]}
         ],
-        max_tokens=900, temperature=0.2
+        max_tokens=900,
+        temperature=0.2
     )
     cevap = yanit.choices[0].message.content
     return {
@@ -143,158 +152,272 @@ def degerlendirme_yap(img_b64: str, itiraz_metni: str | None = None) -> dict:
 
 
 def itiraz_kaydet(kayit: dict):
+    """İtirazı JSONL ve Excel'e kaydeder."""
     jsonl_yolu = ITIRAZ_KLASOR / "itirazlar.jsonl"
     with open(jsonl_yolu, "a", encoding="utf-8") as f:
         f.write(json.dumps(kayit, ensure_ascii=False) + "\n")
+
+    # Excel güncelle
     excel_yolu = ITIRAZ_KLASOR / "itirazlar.xlsx"
     yeni_satir = {
-        "Tarih": kayit["tarih"], "Öğrenci": kayit["ogrenci"], "Dosya": kayit["pdf_adi"],
-        "Orijinal Not": kayit["orijinal_not"], "Yeni Not": kayit["yeni_not"],
-        "İtiraz Kararı": kayit["itiraz_karari"], "İtiraz Gerekçesi": kayit["itiraz_nedeni"],
-        "Karar Gerekçesi": kayit["karar_gerekce"], "Tam Değerlendirme": kayit["ham_cevap"]
+        "Tarih": kayit["tarih"],
+        "Öğrenci": kayit["ogrenci"],
+        "Dosya": kayit["pdf_adi"],
+        "Orijinal Not": kayit["orijinal_not"],
+        "Yeni Not": kayit["yeni_not"],
+        "İtiraz Kararı": kayit["itiraz_karari"],
+        "İtiraz Gerekçesi": kayit["itiraz_nedeni"],
+        "Karar Gerekçesi": kayit["karar_gerekce"],
+        "Tam Değerlendirme": kayit["ham_cevap"]
     }
-    df = pd.concat([pd.read_excel(excel_yolu), pd.DataFrame([yeni_satir])], ignore_index=True) \
-        if excel_yolu.exists() else pd.DataFrame([yeni_satir])
+    if excel_yolu.exists():
+        df = pd.read_excel(excel_yolu)
+        df = pd.concat([df, pd.DataFrame([yeni_satir])], ignore_index=True)
+    else:
+        df = pd.DataFrame([yeni_satir])
     df.to_excel(excel_yolu, index=False)
 
+
+# ── Rotalar ──────────────────────────────────────────────
 
 @app.route("/")
 def anasayfa():
     return render_template("index.html")
 
 
+# --- Toplu Analiz ---
+
 @app.route("/api/klasor-tara", methods=["POST"])
 def klasor_tara():
     veri = request.get_json()
-    klasor = Path(veri.get("yol", "").strip())
+    klasor_yolu = veri.get("yol", "").strip()
+    if not klasor_yolu:
+        return jsonify({"hata": "Klasör yolu boş"}), 400
+    klasor = Path(klasor_yolu)
     if not klasor.exists():
-        return jsonify({"hata": f"Klasör bulunamadı: {klasor}"}), 400
+        return jsonify({"hata": f"Klasör bulunamadı: {klasor_yolu}"}), 400
     pdfler = sorted(klasor.glob("**/*.pdf"))
-    return jsonify({"dosyalar": [{"isim": p.name, "yol": str(p), "boyut_kb": round(p.stat().st_size/1024, 1)} for p in pdfler], "toplam": len(pdfler)})
+    dosyalar = [{"isim": p.name, "yol": str(p), "boyut_kb": round(p.stat().st_size / 1024, 1)} for p in pdfler]
+    return jsonify({"dosyalar": dosyalar, "toplam": len(dosyalar)})
 
 
 @app.route("/api/analiz-et", methods=["POST"])
 def analiz_et():
-    pdf_yolu = Path(request.get_json().get("yol", "").strip())
+    veri = request.get_json()
+    pdf_yolu = Path(veri.get("yol", "").strip())
     if not pdf_yolu.exists():
-        return jsonify({"hata": f"Dosya bulunamadı"}), 400
+        return jsonify({"hata": f"Dosya bulunamadı: {pdf_yolu}"}), 400
     try:
         img_b64 = pdf_path_to_b64(pdf_yolu)
         if not img_b64:
             return jsonify({"hata": "PDF görüntüye çevrilemedi"}), 500
-        s = degerlendirme_yap(img_b64)
-        return jsonify({"dosya": pdf_yolu.name, "ogrenci": pdf_yolu.stem.replace("_", " ").title(),
-                        "not": s["not"], "degerlendirme": s["ham_cevap"], "token": s["token"]})
+        sonuc = degerlendirme_yap(img_b64)
+        return jsonify({
+            "dosya": pdf_yolu.name,
+            "ogrenci": pdf_yolu.stem.replace("_", " ").title(),
+            "not": sonuc["not"],
+            "degerlendirme": sonuc["ham_cevap"],
+            "token": sonuc["token"]
+        })
     except Exception as e:
         return jsonify({"hata": str(e)}), 500
 
 
 @app.route("/api/excel-indir", methods=["POST"])
 def excel_indir():
-    sonuclar = request.get_json().get("sonuclar", [])
+    veri = request.get_json()
+    sonuclar = veri.get("sonuclar", [])
     if not sonuclar:
         return jsonify({"hata": "Sonuç yok"}), 400
-    df = pd.DataFrame(sonuclar).rename(columns={"dosya": "Dosya Adı", "ogrenci": "Öğrenci Adı", "not": "Not", "degerlendirme": "Değerlendirme"})
-    for k, b in [("Genel Değerlendirme", "GENEL_DEGERLENDIRME"), ("Öğrenci Adı", None)]:
-        if b: df[k] = df["Değerlendirme"].apply(lambda x: bolum_cikart(str(x), b))
-    df["Güçlü Yönler"] = df["Değerlendirme"].apply(lambda x: bolum_cikart(str(x), "GUCLU_YONLER"))
-    df["Geliştirilecek Yönler"] = df["Değerlendirme"].apply(lambda x: bolum_cikart(str(x), "GELISTIRILECEK_YONLER"))
-    df["Tavsiyeler"] = df["Değerlendirme"].apply(lambda x: bolum_cikart(str(x), "TAVSIYELER"))
-    kolonlar = ["Öğrenci Adı", "Not", "Genel Değerlendirme", "Güçlü Yönler", "Geliştirilecek Yönler", "Tavsiyeler", "Dosya Adı"]
+
+    df = pd.DataFrame(sonuclar)
+    df = df.rename(columns={"dosya": "Dosya Adı", "ogrenci": "Öğrenci Adı",
+                             "not": "Not", "degerlendirme": "Değerlendirme"})
+
+    def b(metin, k): return bolum_cikart(str(metin), k)
+    df["Genel Değerlendirme"] = df["Değerlendirme"].apply(lambda x: b(x, "GENEL_DEGERLENDIRME"))
+    df["Güçlü Yönler"] = df["Değerlendirme"].apply(lambda x: b(x, "GUCLU_YONLER"))
+    df["Geliştirilecek Yönler"] = df["Değerlendirme"].apply(lambda x: b(x, "GELISTIRILECEK_YONLER"))
+    df["Tavsiyeler"] = df["Değerlendirme"].apply(lambda x: b(x, "TAVSIYELER"))
+
+    kolonlar = ["Öğrenci Adı", "Not", "Genel Değerlendirme", "Güçlü Yönler",
+                "Geliştirilecek Yönler", "Tavsiyeler", "Dosya Adı"]
     df = df[[k for k in kolonlar if k in df.columns]]
+
     buf = io.BytesIO()
-    with pd.ExcelWriter(buf, engine="openpyxl") as w:
-        df.to_excel(w, index=False, sheet_name="Değerlendirmeler")
-        ws = w.sheets["Değerlendirmeler"]
+    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+        df.to_excel(writer, index=False, sheet_name="Değerlendirmeler")
+        ws = writer.sheets["Değerlendirmeler"]
+        genis = {"Öğrenci Adı": 25, "Not": 8, "Genel Değerlendirme": 50,
+                 "Güçlü Yönler": 40, "Geliştirilecek Yönler": 40, "Tavsiyeler": 40, "Dosya Adı": 30}
         for i, k in enumerate(df.columns, 1):
-            ws.column_dimensions[chr(64+i)].width = {"Not": 8, "Öğrenci Adı": 25}.get(k, 40)
+            ws.column_dimensions[chr(64 + i)].width = genis.get(k, 20)
     buf.seek(0)
-    return send_file(buf, as_attachment=True, download_name=f"degerlendirme_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+    tarih = datetime.now().strftime("%Y%m%d_%H%M")
+    return send_file(buf, as_attachment=True,
+                     download_name=f"degerlendirme_{tarih}.xlsx",
                      mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 
 @app.route("/api/rapor", methods=["POST"])
 def rapor():
-    sonuclar = request.get_json().get("sonuclar", [])
-    notlar = [float(s["not"]) for s in sonuclar if str(s.get("not", "")).replace(".","").isdigit()]
-    if not notlar: return jsonify({"hata": "Not verisi yok"}), 400
+    veri = request.get_json()
+    sonuclar = veri.get("sonuclar", [])
+    notlar = []
+    for s in sonuclar:
+        try:
+            notlar.append(float(s.get("not", 0)))
+        except (ValueError, TypeError):
+            pass
+    if not notlar:
+        return jsonify({"hata": "Not verisi yok"}), 400
+
     n = len(notlar)
     siralama = sorted(zip([s.get("ogrenci", "?") for s in sonuclar], notlar), key=lambda x: -x[1])
     dagilim = {"0-49": 0, "50-59": 0, "60-69": 0, "70-79": 0, "80-89": 0, "90-100": 0}
     for nt in notlar:
-        k = "0-49" if nt<50 else "50-59" if nt<60 else "60-69" if nt<70 else "70-79" if nt<80 else "80-89" if nt<90 else "90-100"
-        dagilim[k] += 1
-    return jsonify({"toplam_ogrenci": n, "ortalama": round(sum(notlar)/n, 1),
-                    "en_yuksek": max(notlar), "en_dusuk": min(notlar),
-                    "gecme_orani": round(sum(1 for nt in notlar if nt>=50)/n*100, 1),
-                    "dagilim": dagilim, "siralama": [{"ogrenci": a, "not": b} for a, b in siralama[:10]]})
+        if nt < 50: dagilim["0-49"] += 1
+        elif nt < 60: dagilim["50-59"] += 1
+        elif nt < 70: dagilim["60-69"] += 1
+        elif nt < 80: dagilim["70-79"] += 1
+        elif nt < 90: dagilim["80-89"] += 1
+        else: dagilim["90-100"] += 1
 
+    return jsonify({
+        "toplam_ogrenci": n,
+        "ortalama": round(sum(notlar) / n, 1),
+        "en_yuksek": max(notlar),
+        "en_dusuk": min(notlar),
+        "gecme_orani": round(sum(1 for nt in notlar if nt >= 50) / n * 100, 1),
+        "dagilim": dagilim,
+        "siralama": [{"ogrenci": a, "not": b} for a, b in siralama[:10]]
+    })
+
+
+# --- Tekli Analiz (PDF Yükle) ---
 
 @app.route("/api/tekli-analiz", methods=["POST"])
 def tekli_analiz():
-    if "dosya" not in request.files or not request.files["dosya"].filename.lower().endswith(".pdf"):
+    if "dosya" not in request.files:
         return jsonify({"hata": "PDF dosyası seçilmedi"}), 400
+
     dosya = request.files["dosya"]
+    if not dosya.filename.lower().endswith(".pdf"):
+        return jsonify({"hata": "Sadece PDF dosyası yüklenebilir"}), 400
+
+    pdf_bytes = dosya.read()
     try:
-        img_b64 = pdf_to_jpeg_b64(dosya.read())
-        if not img_b64: return jsonify({"hata": "PDF görüntüye çevrilemedi"}), 500
-        s = degerlendirme_yap(img_b64)
-        return jsonify({"ogrenci": Path(dosya.filename).stem.replace("_", " ").title(),
-                        "dosya": dosya.filename, "not": s["not"], "genel": s["genel"],
-                        "guclu": s["guclu"], "gelistir": s["gelistir"], "tavsiye": s["tavsiye"],
-                        "gorsel": img_b64, "tarih": datetime.now().strftime("%d.%m.%Y %H:%M"), "token": s["token"]})
+        img_b64 = pdf_to_jpeg_b64(pdf_bytes)
+        if not img_b64:
+            return jsonify({"hata": "PDF görüntüye çevrilemedi"}), 500
+
+        sonuc = degerlendirme_yap(img_b64)
+        ogrenci = Path(dosya.filename).stem.replace("_", " ").title()
+
+        return jsonify({
+            "ogrenci": ogrenci,
+            "dosya": dosya.filename,
+            "not": sonuc["not"],
+            "genel": sonuc["genel"],
+            "guclu": sonuc["guclu"],
+            "gelistir": sonuc["gelistir"],
+            "tavsiye": sonuc["tavsiye"],
+            "gorsel": img_b64,         # Frontend'de <img> olarak gösterilir
+            "tarih": datetime.now().strftime("%d.%m.%Y %H:%M"),
+            "token": sonuc["token"]
+        })
     except Exception as e:
         return jsonify({"hata": str(e)}), 500
 
+
+# --- İtiraz ---
 
 @app.route("/api/itiraz", methods=["POST"])
 def itiraz():
     ogrenci = request.form.get("ogrenci", "").strip()
     orijinal_not = request.form.get("orijinal_not", "").strip()
     itiraz_nedeni = request.form.get("itiraz_nedeni", "").strip()
+
     if not ogrenci or not itiraz_nedeni:
         return jsonify({"hata": "Öğrenci adı ve itiraz gerekçesi zorunlu"}), 400
     if "dosya" not in request.files:
         return jsonify({"hata": "Çizim PDF'i seçilmedi"}), 400
+
     dosya = request.files["dosya"]
+    pdf_bytes = dosya.read()
+
     try:
-        img_b64 = pdf_to_jpeg_b64(dosya.read())
-        if not img_b64: return jsonify({"hata": "PDF görüntüye çevrilemedi"}), 500
-        s = degerlendirme_yap(img_b64, itiraz_metni=f"Orijinal Not: {orijinal_not}\nİtiraz Gerekçesi: {itiraz_nedeni}")
-        kayit = {"tarih": datetime.now().isoformat(), "ogrenci": ogrenci, "pdf_adi": dosya.filename,
-                 "orijinal_not": orijinal_not, "itiraz_nedeni": itiraz_nedeni, "yeni_not": s["not"],
-                 "itiraz_karari": s["itiraz_karari"] or "—", "karar_gerekce": s["karar_gerekce"] or "",
-                 "ham_cevap": s["ham_cevap"]}
+        img_b64 = pdf_to_jpeg_b64(pdf_bytes)
+        if not img_b64:
+            return jsonify({"hata": "PDF görüntüye çevrilemedi"}), 500
+
+        itiraz_tam = f"Orijinal Not: {orijinal_not}\nİtiraz Gerekçesi: {itiraz_nedeni}"
+        sonuc = degerlendirme_yap(img_b64, itiraz_metni=itiraz_tam)
+
+        kayit = {
+            "tarih": datetime.now().isoformat(),
+            "ogrenci": ogrenci,
+            "pdf_adi": dosya.filename,
+            "orijinal_not": orijinal_not,
+            "itiraz_nedeni": itiraz_nedeni,
+            "yeni_not": sonuc["not"],
+            "itiraz_karari": sonuc["itiraz_karari"] or "—",
+            "karar_gerekce": sonuc["karar_gerekce"] or "",
+            "ham_cevap": sonuc["ham_cevap"]
+        }
         itiraz_kaydet(kayit)
-        return jsonify({**kayit, "guclu": s["guclu"], "gelistir": s["gelistir"], "tavsiye": s["tavsiye"],
-                        "gorsel": img_b64, "tarih_goster": datetime.now().strftime("%d.%m.%Y %H:%M"), "token": s["token"]})
+
+        return jsonify({
+            **kayit,
+            "guclu": sonuc["guclu"],
+            "gelistir": sonuc["gelistir"],
+            "tavsiye": sonuc["tavsiye"],
+            "gorsel": img_b64,
+            "tarih_goster": datetime.now().strftime("%d.%m.%Y %H:%M"),
+            "token": sonuc["token"]
+        })
     except Exception as e:
         return jsonify({"hata": str(e)}), 500
 
 
-@app.route("/api/itirazlar-listesi")
+@app.route("/api/itirazlar-listesi", methods=["GET"])
 def itirazlar_listesi():
-    jsonl = ITIRAZ_KLASOR / "itirazlar.jsonl"
-    if not jsonl.exists(): return jsonify({"itirazlar": [], "toplam": 0})
+    jsonl_yolu = ITIRAZ_KLASOR / "itirazlar.jsonl"
+    if not jsonl_yolu.exists():
+        return jsonify({"itirazlar": [], "toplam": 0})
     kayitlar = []
-    for satir in open(jsonl, encoding="utf-8"):
-        try:
-            k = json.loads(satir)
-            kayitlar.append({"tarih": k.get("tarih", "")[:10], "ogrenci": k.get("ogrenci", ""),
-                             "orijinal_not": k.get("orijinal_not", ""), "yeni_not": k.get("yeni_not", ""),
-                             "itiraz_karari": k.get("itiraz_karari", ""), "itiraz_nedeni": k.get("itiraz_nedeni", "")[:80]})
-        except: pass
+    with open(jsonl_yolu, encoding="utf-8") as f:
+        for satir in f:
+            try:
+                k = json.loads(satir)
+                kayitlar.append({
+                    "tarih": k.get("tarih", "")[:10],
+                    "ogrenci": k.get("ogrenci", ""),
+                    "orijinal_not": k.get("orijinal_not", ""),
+                    "yeni_not": k.get("yeni_not", ""),
+                    "itiraz_karari": k.get("itiraz_karari", ""),
+                    "itiraz_nedeni": k.get("itiraz_nedeni", "")[:80]
+                })
+            except Exception:
+                pass
     return jsonify({"itirazlar": list(reversed(kayitlar)), "toplam": len(kayitlar)})
 
 
-@app.route("/api/itiraz-excel-indir")
+@app.route("/api/itiraz-excel-indir", methods=["GET"])
 def itiraz_excel_indir():
-    excel = ITIRAZ_KLASOR / "itirazlar.xlsx"
-    if not excel.exists(): return jsonify({"hata": "Henüz itiraz kaydı yok"}), 404
-    return send_file(excel, as_attachment=True, download_name="itirazlar.xlsx",
+    excel_yolu = ITIRAZ_KLASOR / "itirazlar.xlsx"
+    if not excel_yolu.exists():
+        return jsonify({"hata": "Henüz itiraz kaydı yok"}), 404
+    return send_file(excel_yolu, as_attachment=True,
+                     download_name="itirazlar.xlsx",
                      mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 
 if __name__ == "__main__":
-    print(f"Model: {MODEL_ID}\nTarayıcıda aç: http://localhost:5000")
-    app.run(debug=False, host="0.0.0.0", port=5000)
+    port = int(os.getenv("PORT", 5000))
+    print("=" * 50)
+    print("AutoCAD Değerlendirme Uygulaması")
+    print(f"Model: {MODEL_ID}")
+    print(f"Tarayıcıda aç: http://localhost:{port}")
+    print("=" * 50)
+    app.run(debug=False, host="0.0.0.0", port=port)
