@@ -11,6 +11,7 @@ import re
 import base64
 import io
 import json
+import shutil
 import tempfile
 from pathlib import Path
 from datetime import datetime
@@ -28,6 +29,44 @@ app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 50 * 1024 * 1024  # 50 MB
 
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+
+def find_poppler_path() -> str | None:
+    """Windows conda ortamında poppler binary yolunu otomatik bul."""
+    # 1. Conda aktif ortamından bul (en güvenilir yol)
+    conda_prefix = os.environ.get("CONDA_PREFIX")
+    if conda_prefix:
+        p = Path(conda_prefix) / "Library" / "bin"
+        if (p / "pdftoppm.exe").exists():
+            return str(p)
+
+    # 2. Sistem PATH'inde ara
+    pdftoppm = shutil.which("pdftoppm") or shutil.which("pdftoppm.exe")
+    if pdftoppm:
+        return str(Path(pdftoppm).parent)
+
+    # 3. Yaygın anaconda/miniconda kurulum yerleri
+    home = Path.home()
+    env_adi = "autocad-degerlendirme"
+    adaylar = [
+        home / "anaconda3" / "envs" / env_adi / "Library" / "bin",
+        home / "miniconda3" / "envs" / env_adi / "Library" / "bin",
+        home / "AppData" / "Local" / "anaconda3" / "envs" / env_adi / "Library" / "bin",
+        home / "AppData" / "Local" / "miniconda3" / "envs" / env_adi / "Library" / "bin",
+        Path("C:/ProgramData/anaconda3/envs") / env_adi / "Library" / "bin",
+    ]
+    for aday in adaylar:
+        if (aday / "pdftoppm.exe").exists():
+            return str(aday)
+
+    return None  # Linux/Mac'te None → PATH'den otomatik alır
+
+
+POPPLER_PATH = find_poppler_path()
+if POPPLER_PATH:
+    print(f"[OK] Poppler bulundu: {POPPLER_PATH}")
+else:
+    print("[INFO] Poppler PATH'den alınacak (Linux/Mac veya conda PATH'i aktif)")
 MODEL_ID = os.getenv("FINETUNED_MODEL_ID", "gpt-4o-mini-2024-07-18")
 TALIMATLAR_YOLU = Path(os.getenv("DRIVE_DATA_PATH", "./drive")) / "talimatlar"
 ITIRAZ_KLASOR = Path("./itirazlar")
@@ -74,29 +113,40 @@ def talimat_yukle() -> str:
     return _talimat_cache
 
 
-def pdf_to_jpeg_b64(pdf_bytes: bytes) -> str | None:
-    """PDF bytes → base64 JPEG (ilk sayfa, max 1024px)."""
+def pdf_to_jpeg_b64(pdf_bytes: bytes) -> str:
+    """PDF bytes → base64 JPEG (ilk sayfa, max 1024px).
+
+    Windows'ta NamedTemporaryFile dosyayı kilitler; mkstemp kullanıyoruz.
+    Hata oluşursa açıklayıcı mesajla exception fırlatır.
+    """
+    fd, tmp_yolu = tempfile.mkstemp(suffix=".pdf")
     try:
-        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
-            tmp.write(pdf_bytes)
-            tmp_yolu = tmp.name
-        sayfalar = convert_from_path(tmp_yolu, dpi=150, first_page=1, last_page=1)
-        os.unlink(tmp_yolu)
-        if not sayfalar:
-            return None
-        img = sayfalar[0]
-        img.thumbnail((1024, 1024), Image.LANCZOS)
-        buf = io.BytesIO()
-        img.save(buf, format="JPEG", quality=85)
-        return base64.b64encode(buf.getvalue()).decode()
+        os.write(fd, pdf_bytes)
+        os.close(fd)          # Windows: dosyayı kapat, sonra poppler okuyabilsin
+        kwargs: dict = {"dpi": 150, "first_page": 1, "last_page": 1}
+        if POPPLER_PATH:
+            kwargs["poppler_path"] = POPPLER_PATH
+        sayfalar = convert_from_path(tmp_yolu, **kwargs)
     except Exception as e:
-        print(f"PDF dönüştürme hatası: {e}")
-        return None
+        raise RuntimeError(f"PDF→JPEG dönüşüm hatası: {e}") from e
+    finally:
+        try:
+            os.unlink(tmp_yolu)
+        except OSError:
+            pass
+
+    if not sayfalar:
+        raise RuntimeError("PDF'den sayfa okunamadı (dosya boş veya bozuk olabilir).")
+    img = sayfalar[0]
+    img.thumbnail((1024, 1024), Image.LANCZOS)
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=85)
+    return base64.b64encode(buf.getvalue()).decode()
 
 
-def pdf_path_to_b64(pdf_yolu: Path) -> str | None:
+def pdf_path_to_b64(pdf_yolu: Path) -> str:
     if not pdf_yolu.exists():
-        return None
+        raise FileNotFoundError(f"Dosya bulunamadı: {pdf_yolu}")
     return pdf_to_jpeg_b64(pdf_yolu.read_bytes())
 
 
@@ -209,8 +259,6 @@ def analiz_et():
         return jsonify({"hata": f"Dosya bulunamadı: {pdf_yolu}"}), 400
     try:
         img_b64 = pdf_path_to_b64(pdf_yolu)
-        if not img_b64:
-            return jsonify({"hata": "PDF görüntüye çevrilemedi"}), 500
         sonuc = degerlendirme_yap(img_b64)
         return jsonify({
             "dosya": pdf_yolu.name,
@@ -220,6 +268,7 @@ def analiz_et():
             "token": sonuc["token"]
         })
     except Exception as e:
+        print(f"[HATA] {pdf_yolu.name}: {e}")
         return jsonify({"hata": str(e)}), 500
 
 
@@ -308,9 +357,6 @@ def tekli_analiz():
     pdf_bytes = dosya.read()
     try:
         img_b64 = pdf_to_jpeg_b64(pdf_bytes)
-        if not img_b64:
-            return jsonify({"hata": "PDF görüntüye çevrilemedi"}), 500
-
         sonuc = degerlendirme_yap(img_b64)
         ogrenci = Path(dosya.filename).stem.replace("_", " ").title()
 
@@ -327,6 +373,7 @@ def tekli_analiz():
             "token": sonuc["token"]
         })
     except Exception as e:
+        print(f"[HATA] tekli-analiz {dosya.filename}: {e}")
         return jsonify({"hata": str(e)}), 500
 
 
@@ -348,9 +395,6 @@ def itiraz():
 
     try:
         img_b64 = pdf_to_jpeg_b64(pdf_bytes)
-        if not img_b64:
-            return jsonify({"hata": "PDF görüntüye çevrilemedi"}), 500
-
         itiraz_tam = f"Orijinal Not: {orijinal_not}\nİtiraz Gerekçesi: {itiraz_nedeni}"
         sonuc = degerlendirme_yap(img_b64, itiraz_metni=itiraz_tam)
 
