@@ -93,6 +93,35 @@ tr:hover td { background: #f7f9ff; }
 @media (max-width: 600px) { .iki-sutun { grid-template-columns: 1fr; } }
 .print-btn { float: right; }
 @media print { header, .tab-bar, .aksiyon-bar, button, .print-btn { display: none !important; } .card { box-shadow: none; border: 1px solid #ddd; } }
+
+/* ── Konsol Panel ── */
+#konsol-panel { position:fixed; bottom:0; left:0; right:0; background:#0d1117; border-top:2px solid #3a6fd8; z-index:1000; font-family:'Consolas','Courier New',monospace; }
+#konsol-baslik { display:flex; align-items:center; justify-content:space-between; padding:5px 14px; cursor:pointer; user-select:none; background:#161b22; border-bottom:1px solid #21262d; }
+#konsol-baslik-sol { display:flex; align-items:center; gap:10px; }
+.konsol-dot { width:8px; height:8px; border-radius:50%; }
+.dot-kirmizi{background:#ff5f56;} .dot-sari{background:#ffbd2e;} .dot-yesil{background:#27c93f;}
+#konsol-baslik-yazi { color:#58a6ff; font-weight:700; font-size:0.78rem; letter-spacing:1px; }
+#konsol-sayac { font-size:0.72rem; color:#8b949e; background:#21262d; padding:1px 8px; border-radius:10px; }
+#konsol-baslik-saglar { display:flex; gap:6px; align-items:center; }
+.konsol-btn { padding:3px 10px; font-size:0.72rem; border:none; border-radius:4px; cursor:pointer; font-family:inherit; font-weight:600; }
+.konsol-btn-gri { background:#21262d; color:#8b949e; }
+.konsol-btn-gri:hover { background:#30363d; color:#ccc; }
+.konsol-btn-mavi { background:#1f6feb; color:white; }
+.konsol-btn-mavi:hover { background:#388bfd; }
+.konsol-btn-yesil { background:#238636; color:white; }
+.konsol-btn-yesil:hover { background:#2ea043; }
+#konsol-icerik { height:170px; overflow-y:auto; padding:8px 14px; line-height:1.7; font-size:0.76rem; }
+#konsol-icerik::-webkit-scrollbar { width:6px; } #konsol-icerik::-webkit-scrollbar-track { background:#0d1117; } #konsol-icerik::-webkit-scrollbar-thumb { background:#30363d; border-radius:3px; }
+.log-satir { display:flex; gap:8px; }
+.log-zaman { color:#484f58; flex-shrink:0; }
+.log-info { color:#8b949e; }
+.log-basari { color:#3fb950; }
+.log-hata { color:#f85149; font-weight:600; }
+.log-uyari { color:#d29922; }
+.log-sistem { color:#a371f7; }
+.log-istek { color:#58a6ff; }
+body { padding-bottom: 215px; }
+@media print { #konsol-panel { display:none; } body { padding-bottom:0; } }
 </style>
 </head>
 <body>
@@ -230,6 +259,26 @@ tr:hover td { background: #f7f9ff; }
   </div>
 </div>
 
+<!-- ── KONSOL PANELİ ── -->
+<div id="konsol-panel">
+  <div id="konsol-baslik" onclick="konsolToggle()">
+    <div id="konsol-baslik-sol">
+      <span class="konsol-dot dot-kirmizi"></span>
+      <span class="konsol-dot dot-sari"></span>
+      <span class="konsol-dot dot-yesil"></span>
+      <span id="konsol-baslik-yazi">SİSTEM KONSOLU</span>
+      <span id="konsol-sayac">0 kayıt</span>
+    </div>
+    <div id="konsol-baslik-saglar" onclick="event.stopPropagation()">
+      <button class="konsol-btn konsol-btn-yesil" onclick="sistemKontrol()">⚙ Sistem Kontrol</button>
+      <button class="konsol-btn konsol-btn-mavi" onclick="popllerTest()">🔍 Poppler Test</button>
+      <button class="konsol-btn konsol-btn-gri" onclick="konsolTemizle()">Temizle</button>
+      <span id="konsol-toggle-ikon" style="color:#8b949e;font-size:0.8rem;padding:0 4px;">▲</span>
+    </div>
+  </div>
+  <div id="konsol-icerik"></div>
+</div>
+
 <script>
 function sekmeAc(id,btn){document.querySelectorAll('.tab-icerik').forEach(t=>t.classList.remove('aktif'));document.querySelectorAll('.tab-btn').forEach(b=>b.classList.remove('aktif'));document.getElementById('tab-'+id).classList.add('aktif');btn.classList.add('aktif');if(id==='itiraz')itirazlariYukle();}
 function dragOver(e,id){e.preventDefault();document.getElementById(id).classList.add('uzerinde');}
@@ -238,9 +287,72 @@ function drop(e,inputId,alanId){e.preventDefault();dragLeave(alanId);const f=e.d
 function notRengi(n){const v=parseFloat(n);if(isNaN(v))return '';return v>=70?'not-yuksek':v>=50?'not-orta':'not-dusuk';}
 
 let dosyalar=[],sonuclar=[],analizDevam=false;
-async function klasorTara(){const yol=document.getElementById('klasorYolu').value.trim();if(!yol){alert('Klasör yolu girin.');return;}const r=await fetch('/api/klasor-tara',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({yol})});const v=await r.json();if(v.hata){alert(v.hata);return;}dosyalar=v.dosyalar;sonuclar=[];renderDosyaListesi();document.getElementById('dosyaListesiWrap').classList.remove('hidden');document.getElementById('ilerlemeText').textContent=`${dosyalar.length} PDF bulundu`;['excelBtn','raporBtn'].forEach(id=>document.getElementById(id).disabled=true);['sonuclarKart','raporKart'].forEach(id=>document.getElementById(id).classList.add('hidden'));}
+async function klasorTara(){
+  const yol=document.getElementById('klasorYolu').value.trim();
+  if(!yol){alert('Klasör yolu girin.');return;}
+  klog(`Klasör taranıyor: ${yol}`,'istek');
+  const r=await fetch('/api/klasor-tara',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({yol})});
+  const v=await r.json();
+  if(v.hata){klog('Klasör hatası: '+v.hata,'hata');alert(v.hata);return;}
+  dosyalar=v.dosyalar;sonuclar=[];
+  klog(`${dosyalar.length} PDF dosyası bulundu`,'basari');
+  renderDosyaListesi();
+  document.getElementById('dosyaListesiWrap').classList.remove('hidden');
+  document.getElementById('ilerlemeText').textContent=`${dosyalar.length} PDF bulundu`;
+  ['excelBtn','raporBtn'].forEach(id=>document.getElementById(id).disabled=true);
+  ['sonuclarKart','raporKart'].forEach(id=>document.getElementById(id).classList.add('hidden'));
+}
 function renderDosyaListesi(){document.getElementById('dosyaListesi').innerHTML=dosyalar.map((d,i)=>`<div class="dosya-item" id="dosya-${i}"><div><div class="dosya-adi">${d.isim}</div><div class="dosya-boyut">${d.boyut_kb} KB</div></div><div class="dosya-durum durum-bekliyor" id="durum-${i}">Bekliyor</div></div>`).join('');}
-async function tumunuAnaliz(){if(analizDevam)return;analizDevam=true;sonuclar=[];document.getElementById('baslatBtn').disabled=true;document.getElementById('progressWrap').style.display='block';document.getElementById('sonuclarKart').classList.remove('hidden');document.getElementById('sonuclarTablo').innerHTML='';for(let i=0;i<dosyalar.length;i++){const d=dosyalar[i];const el=document.getElementById(`durum-${i}`);el.textContent='İşleniyor...';el.className='dosya-durum durum-isleniyor';document.getElementById('ilerlemeText').textContent=`${i+1} / ${dosyalar.length} analiz ediliyor`;document.getElementById('progressBar').style.width=((i+1)/dosyalar.length*100).toFixed(0)+'%';try{const r=await fetch('/api/analiz-et',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({yol:d.yol})});const s=await r.json();if(s.hata){const kisa=s.hata.length>35?s.hata.substring(0,35)+'…':s.hata;el.textContent='⚠ '+kisa;el.title=s.hata;el.className='dosya-durum durum-hata';sonuclar.push({...d,not:'—',degerlendirme:s.hata,ogrenci:d.isim});}else{el.textContent=`Not: ${s.not}`;el.className='dosya-durum durum-tamam';sonuclar.push(s);const tb=document.getElementById('sonuclarTablo');const tr=document.createElement('tr');tr.innerHTML=`<td>${sonuclar.length}</td><td><strong>${s.ogrenci}</strong></td><td><span class="not-rozet ${notRengi(s.not)}">${s.not}</span></td><td><div class="metin-kisa">${s.degerlendirme||''}</div></td>`;tb.appendChild(tr);tb.lastChild.scrollIntoView({behavior:'smooth',block:'nearest'});}}catch(e){el.textContent='Bağlantı hatası';el.className='dosya-durum durum-hata';}}analizDevam=false;document.getElementById('baslatBtn').disabled=false;document.getElementById('excelBtn').disabled=false;document.getElementById('raporBtn').disabled=false;document.getElementById('ilerlemeText').textContent=`✓ ${sonuclar.length} öğrenci tamamlandı`;}
+async function tumunuAnaliz(){
+  if(analizDevam)return;
+  analizDevam=true;sonuclar=[];
+  document.getElementById('baslatBtn').disabled=true;
+  document.getElementById('progressWrap').style.display='block';
+  document.getElementById('sonuclarKart').classList.remove('hidden');
+  document.getElementById('sonuclarTablo').innerHTML='';
+  let hataSayisi=0,basariSayisi=0;
+  klog(`─── Toplu analiz başlıyor: ${dosyalar.length} dosya ───`,'sistem');
+  for(let i=0;i<dosyalar.length;i++){
+    const d=dosyalar[i];
+    const el=document.getElementById(`durum-${i}`);
+    el.textContent='İşleniyor...';el.className='dosya-durum durum-isleniyor';
+    document.getElementById('ilerlemeText').textContent=`${i+1} / ${dosyalar.length} analiz ediliyor`;
+    document.getElementById('progressBar').style.width=((i+1)/dosyalar.length*100).toFixed(0)+'%';
+    klog(`[${i+1}/${dosyalar.length}] ${d.isim} (${d.boyut_kb} KB)`,'istek');
+    try{
+      const r=await fetch('/api/analiz-et',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({yol:d.yol})});
+      const s=await r.json();
+      if(s.hata){
+        hataSayisi++;
+        klog(`  ✗ HATA: ${s.hata}`,'hata');
+        const kisa=s.hata.length>40?s.hata.substring(0,40)+'…':s.hata;
+        el.textContent='⚠ '+kisa;el.title=s.hata;el.className='dosya-durum durum-hata';
+        sonuclar.push({...d,not:'—',degerlendirme:s.hata,ogrenci:d.isim});
+      }else{
+        basariSayisi++;
+        klog(`  ✓ Not: ${s.not} — ${s.ogrenci}`,'basari');
+        el.textContent=`Not: ${s.not}`;el.className='dosya-durum durum-tamam';
+        sonuclar.push(s);
+        const tb=document.getElementById('sonuclarTablo');
+        const tr=document.createElement('tr');
+        tr.innerHTML=`<td>${basariSayisi}</td><td><strong>${s.ogrenci}</strong></td><td><span class="not-rozet ${notRengi(s.not)}">${s.not}</span></td><td><div class="metin-kisa">${s.degerlendirme||''}</div></td>`;
+        tb.appendChild(tr);
+        tb.lastChild.scrollIntoView({behavior:'smooth',block:'nearest'});
+      }
+    }catch(e){
+      hataSayisi++;
+      klog(`  ✗ Bağlantı hatası: ${e.message}`,'hata');
+      el.textContent='Bağlantı hatası';el.className='dosya-durum durum-hata';
+    }
+  }
+  analizDevam=false;
+  document.getElementById('baslatBtn').disabled=false;
+  document.getElementById('excelBtn').disabled=false;
+  document.getElementById('raporBtn').disabled=false;
+  document.getElementById('ilerlemeText').textContent=`✓ ${dosyalar.length} dosya tamamlandı`;
+  klog(`─── Analiz bitti: ${basariSayisi} başarılı, ${hataSayisi} hatalı ───`, hataSayisi>0?'uyari':'basari');
+  if(hataSayisi>0) klog('İlk hatanın nedenini görmek için yukarı kaydır.','uyari');
+}
 async function excelIndir(){const r=await fetch('/api/excel-indir',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sonuclar})});if(!r.ok){alert('Excel oluşturulamadı.');return;}const blob=await r.blob();const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download=r.headers.get('Content-Disposition')?.match(/filename="(.+)"/)?.[1]||'degerlendirme.xlsx';a.click();URL.revokeObjectURL(url);}
 async function raporGoster(){const r=await fetch('/api/rapor',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sonuclar})});const d=await r.json();if(d.hata){alert(d.hata);return;}const k=document.getElementById('raporKart');k.classList.remove('hidden');k.scrollIntoView({behavior:'smooth'});document.getElementById('raporGrid').innerHTML=`<div class="rapor-kart"><div class="deger">${d.toplam_ogrenci}</div><div class="etiket">Toplam Öğrenci</div></div><div class="rapor-kart"><div class="deger">${d.ortalama}</div><div class="etiket">Sınıf Ortalaması</div></div><div class="rapor-kart"><div class="deger">${d.en_yuksek}</div><div class="etiket">En Yüksek</div></div><div class="rapor-kart"><div class="deger">${d.en_dusuk}</div><div class="etiket">En Düşük</div></div><div class="rapor-kart"><div class="deger">%${d.gecme_orani}</div><div class="etiket">Geçme Oranı</div></div>`;const mx=Math.max(...Object.values(d.dagilim));document.getElementById('dagilimBar').innerHTML=Object.entries(d.dagilim).map(([ar,s])=>`<div class="dagilim-satir"><span class="dagilim-etiket">${ar}</span><div class="dagilim-arka"><div class="dagilim-cubuk" style="width:${mx?s/mx*100:0}%"></div></div><span class="dagilim-sayi">${s}</span></div>`).join('');document.getElementById('siralameListe').innerHTML=d.siralama.map((s,i)=>`<li><span class="sira-no">${i+1}</span><span style="flex:1">${s.ogrenci}</span><span class="not-rozet ${notRengi(s.not)}" style="font-size:0.8rem;padding:2px 9px;">${s.not}</span></li>`).join('');}
 
@@ -253,6 +365,69 @@ function itirazDosyaSec(inp){const f=inp.files[0];if(!f)return;itirazDosyaObj=f;
 async function itirazGonder(){const og=document.getElementById('itirazOgrenci').value.trim();const nd=document.getElementById('itirazNeden').value.trim();if(!og){alert('Öğrenci adı zorunlu.');return;}if(!nd){alert('İtiraz gerekçesi zorunlu.');return;}if(!itirazDosyaObj){alert('PDF seçilmedi.');return;}document.getElementById('itirazGonderBtn').disabled=true;document.getElementById('itirazSonucKart').classList.add('hidden');document.getElementById('itirazYukleniyor').style.display='block';const form=new FormData();form.append('ogrenci',og);form.append('orijinal_not',document.getElementById('itirazOrijinalNot').value||'');form.append('itiraz_nedeni',nd);form.append('dosya',itirazDosyaObj);try{const r=await fetch('/api/itiraz',{method:'POST',body:form});const d=await r.json();document.getElementById('itirazYukleniyor').style.display='none';if(d.hata){alert('Hata: '+d.hata);document.getElementById('itirazGonderBtn').disabled=false;return;}document.getElementById('itirazImg').src='data:image/jpeg;base64,'+d.gorsel;document.getElementById('itirazSonucMeta').textContent=d.ogrenci+' · '+d.tarih_goster;document.getElementById('itirazEskiNot').textContent=d.orijinal_not||'—';const yn=document.getElementById('itirazYeniNot');yn.innerHTML=`${d.yeni_not}<span>/100</span>`;yn.className='not-buyuk '+notRengi(d.yeni_not);const kr=document.getElementById('itirazKararRozet');kr.textContent=(d.itiraz_karari||'—').replace('_',' ');kr.className='karar-rozet karar-'+(d.itiraz_karari||'');document.getElementById('itirazKararGerekce').textContent=d.karar_gerekce||'—';document.getElementById('itirazGuclu').textContent=d.guclu||'—';document.getElementById('itirazGelistir').textContent=d.gelistir||'—';document.getElementById('itirazTavsiye').textContent=d.tavsiye||'—';document.getElementById('itirazSonucKart').classList.remove('hidden');document.getElementById('itirazSonucKart').scrollIntoView({behavior:'smooth'});itirazlariYukle();['itirazOgrenci','itirazOrijinalNot','itirazNeden'].forEach(id=>document.getElementById(id).value='');document.getElementById('itirazDosyaAdi').textContent='';itirazDosyaObj=null;}catch(e){document.getElementById('itirazYukleniyor').style.display='none';alert('Bağlantı hatası: '+e.message);}document.getElementById('itirazGonderBtn').disabled=false;}
 async function itirazlariYukle(){try{const r=await fetch('/api/itirazlar-listesi');const d=await r.json();const tb=document.getElementById('itirazlarTablo');if(!d.itirazlar||!d.itirazlar.length){tb.innerHTML='';document.getElementById('itirazBosMesaj').classList.remove('hidden');return;}document.getElementById('itirazBosMesaj').classList.add('hidden');tb.innerHTML=d.itirazlar.map(it=>`<tr><td>${it.tarih}</td><td><strong>${it.ogrenci}</strong></td><td><span class="not-rozet ${notRengi(it.orijinal_not)}">${it.orijinal_not||'—'}</span></td><td><span class="not-rozet ${notRengi(it.yeni_not)}">${it.yeni_not||'—'}</span></td><td><span class="karar-rozet karar-${it.itiraz_karari||''}" style="font-size:0.75rem;">${(it.itiraz_karari||'—').replace('_',' ')}</span></td><td><div class="metin-kisa" style="max-height:40px;">${it.itiraz_nedeni}</div></td></tr>`).join('');}catch(e){}}
 async function itirazExcelIndir(){window.location.href='/api/itiraz-excel-indir';}
+
+// ── KONSOL ───────────────────────────────────────────────
+let konsolAcik=true, logSayisi=0;
+
+function klog(mesaj, tip='info'){
+  logSayisi++;
+  document.getElementById('konsol-sayac').textContent=logSayisi+' kayıt';
+  const ic=document.getElementById('konsol-icerik');
+  const z=new Date().toLocaleTimeString('tr-TR',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
+  const el=document.createElement('div');
+  el.className='log-satir';
+  el.innerHTML=`<span class="log-zaman">${z}</span><span class="log-${tip}">${mesaj}</span>`;
+  ic.appendChild(el);
+  ic.scrollTop=ic.scrollHeight;
+  // Kapalıysa göster
+  if(!konsolAcik) konsolToggle();
+}
+
+function konsolToggle(){
+  konsolAcik=!konsolAcik;
+  document.getElementById('konsol-icerik').style.display=konsolAcik?'block':'none';
+  document.getElementById('konsol-toggle-ikon').textContent=konsolAcik?'▲':'▼';
+}
+
+function konsolTemizle(){
+  document.getElementById('konsol-icerik').innerHTML='';
+  logSayisi=0;
+  document.getElementById('konsol-sayac').textContent='0 kayıt';
+}
+
+async function sistemKontrol(){
+  klog('─── Sistem kontrol başlatılıyor ───', 'sistem');
+  try{
+    const r=await fetch('/api/sistem-bilgi');
+    const d=await r.json();
+    klog(`Python ${d.python_surum} · ${d.isletim_sistemi}`, 'sistem');
+    klog(`Model: ${d.model}`, 'sistem');
+    klog(`Conda: ${d.conda_prefix}`, 'sistem');
+    klog(`Poppler: ${d.poppler_mesaj}`, d.poppler_ok?'basari':'hata');
+    klog(`OpenAI API: ${d.api_mesaj}`, d.api_ok?'basari':'hata');
+    klog(`Talimatlar: ${d.talimatlar_mesaj}`, d.talimatlar_ok?'basari':'uyari');
+    klog(`İtiraz klasörü: ${d.itiraz_klasor}`, 'info');
+    if(!d.poppler_ok) klog('⚠ Poppler bulunamadı! PDF→görsel dönüşümü başarısız olur. setup_ortam.bat tekrar çalıştır.', 'uyari');
+    if(!d.api_ok) klog('⚠ OpenAI API key eksik/geçersiz! .env dosyasını kontrol et.', 'uyari');
+    klog('─── Sistem kontrol tamamlandı ───', 'sistem');
+  }catch(e){klog('Sistem bilgisi alınamadı: '+e.message,'hata');}
+}
+
+async function popllerTest(){
+  klog('Poppler test ediliyor — minimal PDF dönüştürülüyor...', 'istek');
+  try{
+    const r=await fetch('/api/poppler-test',{method:'POST'});
+    const d=await r.json();
+    if(d.basarili){klog('✓ Poppler test BAŞARILI: '+d.mesaj,'basari');}
+    else{klog('✗ Poppler test BAŞARISIZ: '+d.mesaj,'hata');}
+  }catch(e){klog('Poppler test hatası: '+e.message,'hata');}
+}
+
+// Sayfa yüklenince otomatik kontrol
+window.addEventListener('load',()=>{
+  klog('AutoCAD Değerlendirme Sistemi yüklendi — sistem kontrol ediliyor...','sistem');
+  sistemKontrol();
+});
 </script>
 </body>
 </html>

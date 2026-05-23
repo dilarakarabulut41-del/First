@@ -457,6 +457,70 @@ def itiraz_excel_indir():
                      mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 
+# --- Sistem Bilgisi & Tanılama ---
+
+@app.route("/api/sistem-bilgi", methods=["GET"])
+def sistem_bilgi():
+    """Sistem durumunu kontrol et — konsol paneli için."""
+    import sys
+    import platform
+
+    # Poppler kontrolü
+    if POPPLER_PATH:
+        exe = Path(POPPLER_PATH) / "pdftoppm.exe"
+        if not exe.exists():
+            exe = Path(POPPLER_PATH) / "pdftoppm"   # Linux/Mac
+        poppler_ok = exe.exists()
+        poppler_mesaj = str(POPPLER_PATH)
+    else:
+        pdftoppm = shutil.which("pdftoppm") or shutil.which("pdftoppm.exe")
+        poppler_ok = pdftoppm is not None
+        poppler_mesaj = pdftoppm or "Bulunamadı — poppler kurulu değil veya PATH'de yok"
+
+    # API key kontrolü
+    api_key = os.getenv("OPENAI_API_KEY", "")
+    api_ok = api_key.startswith("sk-") and len(api_key) > 20
+    api_mesaj = "Ayarlı (sk-...)" if api_ok else ("Boş veya .env yüklenmedi" if not api_key else "Geçersiz format (sk- ile başlamalı)")
+
+    # Talimatlar
+    tal_var = TALIMATLAR_YOLU.exists()
+    tal_mesaj = str(TALIMATLAR_YOLU) + (" ✓" if tal_var else " — klasör bulunamadı")
+
+    return jsonify({
+        "python_surum": f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}",
+        "isletim_sistemi": platform.system() + " " + platform.release(),
+        "model": MODEL_ID,
+        "poppler_ok": poppler_ok,
+        "poppler_mesaj": poppler_mesaj,
+        "conda_prefix": os.environ.get("CONDA_PREFIX", "Yok — conda aktif değil"),
+        "api_ok": api_ok,
+        "api_mesaj": api_mesaj,
+        "talimatlar_ok": tal_var,
+        "talimatlar_mesaj": tal_mesaj,
+        "itiraz_klasor": str(ITIRAZ_KLASOR.resolve()),
+    })
+
+
+@app.route("/api/poppler-test", methods=["POST"])
+def poppler_test():
+    """Küçük bir test PDF'i dönüştürerek poppler'ı doğrula."""
+    # 1x1 piksel beyaz PDF (base64)
+    MINIMAL_PDF_B64 = (
+        "JVBERi0xLjEKMSAwIG9iago8PCAvVHlwZSAvQ2F0YWxvZyAvUGFnZXMgMiAwIFIgPj4KZW5kb2JqCjIg"
+        "MCBvYmoKPDwgL1R5cGUgL1BhZ2VzIC9LaWRzIFszIDAgUl0gL0NvdW50IDEgPj4KZW5kb2JqCjMgMCBv"
+        "YmoKPDwgL1R5cGUgL1BhZ2UgL1BhcmVudCAyIDAgUiAvTWVkaWFCb3ggWzAgMCAxIDFdID4+CmVuZG9i"
+        "agp4cmVmCjAgNAowMDAwMDAwMDAwIDY1NTM1IGYgCjAwMDAwMDAwMDkgMDAwMDAgbiAKMDAwMDAwMDA2"
+        "MiAwMDAwMCBuIAowMDAwMDAwMTE1IDAwMDAwIG4gCnRyYWlsZXIKPDwgL1NpemUgNCAvUm9vdCAxIDAg"
+        "UiA+PgpzdGFydHhyZWYKMTkxCiUlRU9G"
+    )
+    try:
+        pdf_bytes = base64.b64decode(MINIMAL_PDF_B64)
+        img_b64 = pdf_to_jpeg_b64(pdf_bytes)
+        return jsonify({"basarili": True, "mesaj": "Poppler çalışıyor ✓", "poppler_yolu": str(POPPLER_PATH)})
+    except Exception as e:
+        return jsonify({"basarili": False, "mesaj": str(e), "poppler_yolu": str(POPPLER_PATH)}), 500
+
+
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 5000))
     print("=" * 50)
